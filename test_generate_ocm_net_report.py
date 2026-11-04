@@ -335,3 +335,34 @@ def test_all_vendors_all_traffic_kpis():
         assert wb_d['DailyCombinedPSTrafic (GB)'].cell(row=4, column=4).value == 50.0
         assert wb_w['DailyCombinedCSTrafic (Kerl)'].cell(row=4, column=4).value == 0.4
         assert wb_w['DailyCombinedPSTrafic (TB)'].cell(row=4, column=4).value == 0.05
+
+def test_sheet_detection_no_duplicate_or_spurious_warnings():
+    # Test case where Daily file has CSTrafic (Erl) and PSTrafic (TB) (partially renamed)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        h2g_path = os.path.join(tmpdir, 'H 2G test.xlsx')
+        headers = ['Date', 'Site Name', 'K3014:Traffic Volume on TCH(Erl)', '2G PS Traffic(MB)']
+        rows = [['2026-05-11', 'DLA_001_A', 1000.0, 200000.0]]
+        create_vendor_mock_file(h2g_path, headers, rows)
+
+        daily_ocm = os.path.join(tmpdir, 'ocm_daily.xlsx')
+        create_ocm_mock_file(
+            daily_ocm,
+            {
+                'DailyCombinedCSTrafic (Erl)': ['2026-05-11'],
+                'DailyCombinedPSTrafic (TB)': ['2026-05-11'],
+            },
+            [['DLA_001', 'DLA_001', 'HUAWEI', None]],
+        )
+
+        logs = []
+        process_vendor_files({'H_2G': h2g_path}, {'daily': daily_ocm}, log_callback=logs.append)
+
+        # Neither CSTrafic nor PSTrafic should be reported as missing
+        missing_traffic_warnings = [
+            l for l in logs if 'missing' in l and ('CSTrafic' in l or 'PSTrafic' in l)
+        ]
+        assert missing_traffic_warnings == [], f'Unexpected warnings: {missing_traffic_warnings}'
+
+        wb = openpyxl.load_workbook(daily_ocm)
+        assert wb['DailyCombinedCSTrafic (Erl)'].cell(row=3, column=4).value == 1000.0
+        assert wb['DailyCombinedPSTrafic (TB)'].cell(row=3, column=4).value == 200.0

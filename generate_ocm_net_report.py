@@ -37,8 +37,6 @@ DAILY_SHEETS = [
     'Avail2G',
     'Avail3G',
     'Avail4G',
-    'DailyCombinedCSTrafic (Kerl)',
-    'DailyCombinedPSTrafic (TB)',
     'CSSR2G',
     'CSSR3G',
     'DCR2G',
@@ -752,6 +750,58 @@ def build_ocm_reference_table(ws) -> dict[str, dict]:
     return ref_table
 
 
+def _find_sheet(wb, target_name: str, period: str) -> str | None:
+    """
+    Find the actual sheet name in the workbook that corresponds to target_name.
+    Supports exact match, case/whitespace/spelling-tolerant match, and fallback
+    for Daily traffic sheets ('(Erl)' <-> '(Kerl)', '(GB)' <-> '(TB)').
+    """
+    # 1. Exact match
+    if target_name in wb.sheetnames:
+        return target_name
+
+    def _norm(s: str) -> str:
+        return re.sub(r'\s+', '', str(s)).lower().replace('traffic', 'trafic')
+
+    wb_norm_map = {_norm(name): name for name in wb.sheetnames}
+    target_norm = _norm(target_name)
+
+    if target_norm in wb_norm_map:
+        return wb_norm_map[target_norm]
+
+    # Fallback mappings for Daily vs legacy names
+    if period == 'daily':
+        daily_fallbacks = {
+            'DailyCombinedCSTrafic (Erl)': ['DailyCombinedCSTrafic (Kerl)', 'DailyCombinedCSTraffic (Kerl)', 'DailyCombinedCSTraffic (Erl)'],
+            'DailyCombinedPSTrafic (GB)': ['DailyCombinedPSTrafic (TB)', 'DailyCombinedPSTraffic (TB)', 'DailyCombinedPSTraffic (GB)'],
+        }
+        for fb in daily_fallbacks.get(target_name, []):
+            if fb in wb.sheetnames:
+                return fb
+            fb_norm = _norm(fb)
+            if fb_norm in wb_norm_map:
+                return wb_norm_map[fb_norm]
+    else:
+        # Weekly / Monthly fallbacks (if user renamed them or slight typo)
+        weekly_fallbacks = {
+            'DailyCombinedCSTrafic (Kerl)': ['DailyCombinedCSTraffic (Kerl)'],
+            'DailyCombinedPSTrafic (TB)': ['DailyCombinedPSTraffic (TB)'],
+        }
+        for fb in weekly_fallbacks.get(target_name, []):
+            if fb in wb.sheetnames:
+                return fb
+            fb_norm = _norm(fb)
+            if fb_norm in wb_norm_map:
+                return wb_norm_map[fb_norm]
+
+    # Also check generic normalized match for other sheets (e.g. spelling or space diffs)
+    for s_name in wb.sheetnames:
+        if _norm(s_name) == target_norm:
+            return s_name
+
+    return None
+
+
 def update_ocm_file(
     filepath: str,
     data: dict,          # {site_code: {period_key: {sheet: value}}}
@@ -781,12 +831,14 @@ def update_ocm_file(
     sheets_to_write = [s for s in target_sheets
                        if (sheets_filter is None or s in sheets_filter)]
 
-    for sheet_name in sheets_to_write:
-        if sheet_name not in wb.sheetnames:
-            _log(f'  WARNING: sheet "{sheet_name}" missing – skipped')
+    for canonical_name in sheets_to_write:
+        actual_sheet_name = _find_sheet(wb, canonical_name, period)
+        if not actual_sheet_name:
+            _log(f'  WARNING: sheet "{canonical_name}" missing – skipped')
             continue
 
-        ws = wb[sheet_name]
+        ws = wb[actual_sheet_name]
+        sheet_name = actual_sheet_name
 
         # ── Build period_key → column-number map from header row (row 2) ──────
         period_col: dict = {}
@@ -821,11 +873,13 @@ def update_ocm_file(
                 continue
             rn = site_row[site_code]
             for pk, sheet_map in period_map.items():
-                val_key = sheet_name
+                val_key = canonical_name
+                if val_key not in sheet_map:
+                    val_key = sheet_name
                 if period == 'daily':
-                    if sheet_name == 'DailyCombinedCSTrafic (Kerl)':
+                    if 'cstraf' in _normalise(val_key).lower().replace('traffic', 'trafic'):
                         val_key = 'DailyCombinedCSTrafic (Erl)'
-                    elif sheet_name == 'DailyCombinedPSTrafic (TB)':
+                    elif 'pstraf' in _normalise(val_key).lower().replace('traffic', 'trafic'):
                         val_key = 'DailyCombinedPSTrafic (GB)'
                 if val_key not in sheet_map:
                     continue
