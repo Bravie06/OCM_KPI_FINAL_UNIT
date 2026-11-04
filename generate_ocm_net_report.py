@@ -30,7 +30,43 @@ logger = logging.getLogger(__name__)
 
 # ─── OCM SHEET NAMES ──────────────────────────────────────────────────────────
 
+# Sheets for Daily reports
+DAILY_SHEETS = [
+    'DailyCombinedCSTrafic (Erl)',
+    'DailyCombinedPSTrafic (GB)',
+    'Avail2G',
+    'Avail3G',
+    'Avail4G',
+    'DailyCombinedCSTrafic (Kerl)',
+    'DailyCombinedPSTrafic (TB)',
+    'CSSR2G',
+    'CSSR3G',
+    'DCR2G',
+    'DCR3G',
+    '3G PacketLoss',
+    '4G PacketLoss',
+    'Throughput 4G Mbps',
+]
+
+# Sheets for Weekly and Monthly reports
+WEEKLY_MONTHLY_SHEETS = [
+    'Avail2G',
+    'Avail3G',
+    'Avail4G',
+    'DailyCombinedCSTrafic (Kerl)',
+    'DailyCombinedPSTrafic (TB)',
+    'CSSR2G',
+    'CSSR3G',
+    'DCR2G',
+    'DCR3G',
+    '3G PacketLoss',
+    '4G PacketLoss',
+    'Throughput 4G Mbps',
+]
+
 SHEETS = [
+    'DailyCombinedCSTrafic (Erl)',
+    'DailyCombinedPSTrafic (GB)',
     'Avail2G',
     'Avail3G',
     'Avail4G',
@@ -51,12 +87,16 @@ PL_VENDOR_KEYS = {'H_3G_PL', 'H_4G_PL', 'N_3G_PL', 'N_4G_PL', 'Z_3G_PL', 'Z_4G_P
 
 # Sheets where values from multiple vendor files are SUMMED (not averaged)
 ADDITIVE_SHEETS = {
+    'DailyCombinedCSTrafic (Erl)',
+    'DailyCombinedPSTrafic (GB)',
     'DailyCombinedCSTrafic (Kerl)',
     'DailyCombinedPSTrafic (TB)',
 }
 
 # Sheets where values are rounded to 2 decimal places on output
 TRAFFIC_SHEETS = {
+    'DailyCombinedCSTrafic (Erl)',
+    'DailyCombinedPSTrafic (GB)',
     'DailyCombinedCSTrafic (Kerl)',
     'DailyCombinedPSTrafic (TB)',
 }
@@ -79,6 +119,30 @@ TRAFFIC_SHEETS = {
 #   ZTE     4G        : availability and rates already in %
 
 KPI_MAP: dict[str, dict[str, tuple[str, float]]] = {
+
+    'DailyCombinedCSTrafic (Erl)': {
+        # Raw values in Erlang; output in Erlang for Daily
+        'H_2G': ('K3014:Traffic Volume on TCH(Erl)',     1.0),
+        'H_3G': ('Grp_ 3G TRAFFIC – SPEECH(Erl)',         1.0),
+        'N_2G': ('Erlang_Traffic_Carried_2G',            1.0),
+        'N_3G': ('grp_traffic_speech_erlangs',           1.0),
+        'Z_2G': ('ORA_2G_CS_TRAFFIC',                   1.0),
+        'Z_3G': ('ORA_3G_CS Voice Traffic (Erl)',        1.0),
+    },
+
+    'DailyCombinedPSTrafic (GB)': {
+        # Output in Giga-Bytes for Daily
+        # MB sources converted MB->GB (x0.001); GB sources kept as-is (x1.0)
+        'H_2G': ('2G PS Traffic(MB)',                                  0.001), # MB -> GB
+        'H_3G': ('Grp_3G&3G+ TOTAL DATA TRAFFIC VOLUME DL&UL(GB)',    1.0),   # GB -> GB
+        'H_4G': ('4G_Grp_4G/LTE TRAFFIC VOLUME(GB)',                  1.0),   # GB -> GB
+        'N_2G': ('Grp_2G_Traffic_Data_Mbytes',                        0.001), # MB -> GB
+        'N_4G': ('Grp_4G_Traffic_New_Gbytes',                         1.0),   # GB -> GB
+        'Z_2G': ('ORA_2G_Traffic_Data_GB',                            1.0),   # GB -> GB
+        'Z_3G': ('ORA_3G_Traffic Total Data_MAC (GB)',                 1.0),   # GB -> GB
+        'Z_4G': ('ORA_4G_Total TRAFFIC(DL+UL)(GB)',                   1.0),   # GB -> GB
+    },
+
 
     'Avail2G': {
         'H_2G': ('RR307:TCH Availability(%)',               1.0),
@@ -467,14 +531,14 @@ def read_vendor_file(
     date_idx = headers.index(date_col)
     site_idx = headers.index(site_col)
 
-    # Build KPI column index → (sheet, multiplier) map  (direct columns)
-    kpi_cols: dict[int, tuple[str, float]] = {}
+    # Build KPI mappings: list of (col_idx, sheet_name, multiplier) (direct columns)
+    kpi_cols: list[tuple[int, str, float]] = []
     for sheet_name, vmap in KPI_MAP.items():
         if vendor_gen in vmap:
             col_name, mult = vmap[vendor_gen]
             norm_col = _normalise(col_name)
             if norm_col in headers:
-                kpi_cols[headers.index(norm_col)] = (sheet_name, mult)
+                kpi_cols.append((headers.index(norm_col), sheet_name, mult))
             else:
                 logger.warning(f'  {vendor_gen}: KPI column "{col_name}" '
                                f'not found for sheet "{sheet_name}"')
@@ -522,7 +586,7 @@ def read_vendor_file(
         if not d:
             continue
 
-        for col_idx, (sheet_name, mult) in kpi_cols.items():
+        for col_idx, sheet_name, mult in kpi_cols:
             raw = row[col_idx] if col_idx < len(row) else None
             val = _to_float(raw)
             if val is not None:
@@ -713,7 +777,8 @@ def update_ocm_file(
     _log(f'Loading: {os.path.basename(filepath)}')
     wb = openpyxl.load_workbook(filepath)
 
-    sheets_to_write = [s for s in SHEETS
+    target_sheets = DAILY_SHEETS if period == 'daily' else WEEKLY_MONTHLY_SHEETS
+    sheets_to_write = [s for s in target_sheets
                        if (sheets_filter is None or s in sheets_filter)]
 
     for sheet_name in sheets_to_write:
@@ -756,13 +821,19 @@ def update_ocm_file(
                 continue
             rn = site_row[site_code]
             for pk, sheet_map in period_map.items():
-                if sheet_name not in sheet_map:
+                val_key = sheet_name
+                if period == 'daily':
+                    if sheet_name == 'DailyCombinedCSTrafic (Kerl)':
+                        val_key = 'DailyCombinedCSTrafic (Erl)'
+                    elif sheet_name == 'DailyCombinedPSTrafic (TB)':
+                        val_key = 'DailyCombinedPSTrafic (GB)'
+                if val_key not in sheet_map:
                     continue
                 if pk not in period_col:
                     continue
                 cn = period_col[pk]
                 decimals = 2 if sheet_name in TRAFFIC_SHEETS else 4
-                ws.cell(row=rn, column=cn, value=round(sheet_map[sheet_name], decimals))
+                ws.cell(row=rn, column=cn, value=round(sheet_map[val_key], decimals))
                 written += 1
 
         _log(f'  {sheet_name}: {written} cells written')
